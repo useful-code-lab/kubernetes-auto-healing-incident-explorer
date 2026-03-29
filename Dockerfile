@@ -1,14 +1,26 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
+
+ENV GOTOOLCHAIN=auto
+ENV CGO_ENABLED=0
+
 WORKDIR /src
 
-# Копируем и приложение, и нужную часть исходников K8s
-COPY ./my-app ./my-app
-COPY ./kubernetes/staging ./kubernetes/staging
+# ❗ СНАЧАЛА копируем ВСЁ, включая staging
+COPY kubernetes ./kubernetes
+COPY kube-source-explorer ./kube-source-explorer
 
-WORKDIR /src/my-app
+WORKDIR /src/kube-source-explorer
+
+# Теперь зависимости найдутся
 RUN go mod download
-RUN go build -o demo-app main.go
 
-FROM alpine:latest
-COPY --from=builder /src/my-app/demo-app /app
+# Сборка
+RUN go build -o /demo-app .
+
+# Runtime
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates
+
+COPY --from=builder /demo-app /app
+
 CMD ["/app"]
