@@ -1,6 +1,6 @@
 module github.com/avpavlov-cloud/kube-source-explorer
 
-go 1.26.1
+go 1.22
 
 // Указываем основной зависимости версию (она подменится локальной)
 require (
