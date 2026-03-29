@@ -13,29 +13,54 @@ import (
 )
 
 func main() {
-	config, _ := rest.InClusterConfig()
-	clientset, _ := kubernetes.NewForConfig(config)
+    fmt.Println("--- ПРИЛОЖЕНИЕ ЗАПУСКАЕТСЯ ---")
+    config, err := rest.InClusterConfig()
+    if err != nil {
+        fmt.Printf("КРИТИЧЕСКАЯ ОШИБКА КОНФИГА: %v\n", err)
+        return
+    }
 
-	mode := "status"
-	if len(os.Args) > 1 {
-		mode = os.Args[1]
-	}
+    clientset, err := kubernetes.NewForConfig(config)
+    if err != nil {
+        fmt.Printf("КРИТИЧЕСКАЯ ОШИБКА КЛИЕНТА: %v\n", err)
+        return
+    }
 
-	if mode == "events" {
-		monitorEvents(clientset)
-	} else {
-		showStatus(clientset)
-	}
+    mode := "status"
+    if len(os.Args) > 1 {
+        mode = os.Args[1] // Убедитесь, что индекс [1], так как [0] - имя программы
+    }
+    fmt.Printf("ВЫБРАН РЕЖИМ: %s\n", mode)
+
+    if mode == "events" {
+        monitorEvents(clientset)
+    } else {
+        showStatus(clientset)
+    }
 }
 
 func monitorEvents(c *kubernetes.Clientset) {
-	fmt.Println(">>> Мониторинг событий кластера (staging)...")
-	watcher, _ := c.CoreV1().Events("").Watch(context.TODO(), metav1.ListOptions{})
-	for event := range watcher.ResultChan() {
-		e := event.Object.(*corev1.Event)
-		fmt.Printf("[%s] %s: %s\n", e.LastTimestamp.Format("15:04:05"), e.InvolvedObject.Name, e.Message)
-	}
+    fmt.Println(">>> Инициализация Watcher для Events...")
+    watcher, err := c.CoreV1().Events("").Watch(context.TODO(), metav1.ListOptions{})
+    if err != nil {
+        fmt.Printf("ОШИБКА WATCH: %v\n", err)
+        return
+    }
+    fmt.Println(">>> Канал Watch успешно открыт. Ожидание событий...")
+
+    for event := range watcher.ResultChan() {
+        // Добавим проверку типа события
+        fmt.Printf("--- ПОЛУЧЕНО СОБЫТИЕ ТИПА: %v ---\n", event.Type)
+        
+        e, ok := event.Object.(*corev1.Event)
+        if !ok {
+            fmt.Println("Ошибка приведения типа события")
+            continue
+        }
+        fmt.Printf("[%s] %s: %s\n", e.LastTimestamp.Format("15:04:05"), e.InvolvedObject.Name, e.Message)
+    }
 }
+
 
 func showStatus(c *kubernetes.Clientset) {
 	for {

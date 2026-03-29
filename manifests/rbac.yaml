@@ -2,6 +2,18 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: staging-demo-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: staging-demo-role
+rules:
+- apiGroups: [""]
+  # Добавляем ресурсы, к которым обращаемся через staging/client-go
+  resources: ["pods", "events", "nodes", "namespaces"]
+  # Разрешаем смотреть (watch) и перечислять (list)
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -13,5 +25,5 @@ subjects:
     namespace: default
 roleRef:
   kind: ClusterRole
-  name: view
+  name: staging-demo-role # Используем нашу новую роль вместо стандартной view
   apiGroup: rbac.authorization.k8s.io

@@ -8,3 +8,4 @@ spec:
   - name: explorer
     image: kube-source-explorer:latest
     imagePullPolicy: Never # Чтобы он не лез в интернет, а брал ваш свежий образ
+    args: ["events"]
