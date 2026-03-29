@@ -9,6 +9,31 @@ http://127.0.0.1:41099/api/v1/namespaces/kubernetes-dashboard/services/http:kube
 
 Сборка докера
 ```bash
+eval $(minikube docker-env)
+
 aleksey@aleksey:~/kube-source-explorer$ cd ..
 aleksey@aleksey:~$ docker build -t kube-source-explorer:latest -f kube-source-explorer/Dockerfile .
 ```
+
+## Применяем права и создаем под
+```bash
+kubectl apply -f kube-source-explorer/manifests/rbac.yaml
+
+kubectl apply -f kube-source-explorer/manifests/pod.yaml
+```
+
+Проверить наличие образа внутри Minikube
+```bash
+minikube image ls --format table | grep kube-source-explorer
+```
+
+Запустить под
+```bash
+# Удаляем старый
+kubectl delete pod kube-source-explorer
+
+# Запускаем заново
+kubectl apply -f kube-source-explorer/manifests/pod.yaml
+```
+
+

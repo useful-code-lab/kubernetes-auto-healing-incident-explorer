@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-source-explorer
+spec:
+  serviceAccountName: staging-demo-sa
+  containers:
+  - name: explorer
+    image: kube-source-explorer:latest
+    imagePullPolicy: Never # Чтобы он не лез в интернет, а брал ваш свежий образ
