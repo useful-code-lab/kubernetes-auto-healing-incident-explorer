@@ -9,4 +9,4 @@ spec:
       image: kube-source-explorer:latest
       imagePullPolicy: Never # Чтобы использовать локальный образ
       command: ["/app"]      # явно указываем путь к бинарнику
-      args: ["status"]        # аргументы к /app
+      args: ["events"]        # аргументы к /app

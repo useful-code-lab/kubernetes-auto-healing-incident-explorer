@@ -41,4 +41,6 @@ kubectl logs kube-source-explorer
 
 В проекте работают команды make
 
+Меняем настройки в manifests и применяем `kubectl replace --force -f manifests/pod.yaml`
+
 
