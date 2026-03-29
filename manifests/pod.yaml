@@ -5,7 +5,8 @@ metadata:
 spec:
   serviceAccountName: staging-demo-sa
   containers:
-  - name: explorer
-    image: kube-source-explorer:latest
-    imagePullPolicy: Never # Чтобы он не лез в интернет, а брал ваш свежий образ
-    args: ["events"]
+    - name: explorer
+      image: kube-source-explorer:latest
+      imagePullPolicy: Never # Чтобы использовать локальный образ
+      command: ["/app"]      # явно указываем путь к бинарнику
+      args: ["status"]        # аргументы к /app
