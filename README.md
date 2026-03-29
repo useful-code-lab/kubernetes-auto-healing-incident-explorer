@@ -27,13 +27,18 @@ kubectl apply -f kube-source-explorer/manifests/pod.yaml
 minikube image ls --format table | grep kube-source-explorer
 ```
 
-Запустить под
+## Запустить под
 ```bash
-# Удаляем старый
-kubectl delete pod kube-source-explorer
-
-# Запускаем заново
-kubectl apply -f kube-source-explorer/manifests/pod.yaml
+minikube start --driver=docker
 ```
+```bash
+# Проверить статус
+kubectl get pod kube-source-explorer
+
+# Посмотреть вывод программы и вашу "пасхалку" из staging
+kubectl logs kube-source-explorer
+```
+
+В проекте работают команды make
 
 
