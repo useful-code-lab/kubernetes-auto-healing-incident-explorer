@@ -85,5 +85,13 @@ kubectl port-forward kube-source-explorer 8080:8080
 Открой http://localhost:8080/metrics
 ```
 
+## Проверка масштабирования
+```bash
+kubectl create deployment scaling-demo --image=busybox -- /bin/sh -c "exit 1"
+```
+Посмотреть сколько раз под перезапустился
+```bash
+ kubectl get pods -l app=scaling-demo
+ ```
 
 

@@ -73,6 +73,53 @@ func main() {
 	}
 }
 
+func scaleUpDeployment(c *kubernetes.Clientset, namespace, podName string) {
+	fmt.Fprintf(os.Stdout, "🔍 DEBUG: Начинаю поиск владельца для пода [%s]\n", podName)
+
+	pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ DEBUG: Не нашел под: %v\n", err)
+		return
+	}
+
+	for _, owner := range pod.OwnerReferences {
+		fmt.Fprintf(os.Stdout, "🔗 DEBUG: Найден владелец типа [%s] с именем [%s]\n", owner.Kind, owner.Name)
+
+		if owner.Kind == "ReplicaSet" {
+			rs, err := c.AppsV1().ReplicaSets(namespace).Get(context.TODO(), owner.Name, metav1.GetOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ DEBUG: Не нашел ReplicaSet: %v\n", err)
+				continue
+			}
+
+			for _, rsOwner := range rs.OwnerReferences {
+				fmt.Fprintf(os.Stdout, "🔗 DEBUG: У ReplicaSet найден владелец [%s] -> [%s]\n", rsOwner.Kind, rsOwner.Name)
+
+				if rsOwner.Kind == "Deployment" {
+					deploy, err := c.AppsV1().Deployments(namespace).Get(context.TODO(), rsOwner.Name, metav1.GetOptions{})
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "❌ DEBUG: Ошибка доступа к Deployment: %v\n", err)
+						continue
+					}
+
+					// Печатаем текущее состояние перед попыткой изменения
+					fmt.Fprintf(os.Stdout, "📈 DEBUG: Текущие реплики Deployment [%s]: %d\n", deploy.Name, *deploy.Spec.Replicas)
+
+					newReplicas := *deploy.Spec.Replicas + 1
+					deploy.Spec.Replicas = &newReplicas
+
+					_, err = c.AppsV1().Deployments(namespace).Update(context.TODO(), deploy, metav1.UpdateOptions{})
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "❌ DEBUG: Ошибка UPDATE: %v\n", err)
+					} else {
+						fmt.Fprintf(os.Stdout, "🚀 УСПЕХ: Реплики %s увеличены до %d\n", deploy.Name, newReplicas)
+					}
+				}
+			}
+		}
+	}
+}
+
 func monitorEvents(c *kubernetes.Clientset) {
 	fmt.Fprintln(os.Stderr, ">>> Запуск Watcher...")
 	// Пустая строка "" означает все неймспейсы
@@ -155,7 +202,7 @@ func showStatus(c *kubernetes.Clientset) {
 					delete(statusHistory, podKey)
 				}
 
-				// 3. Свежий рестарт и Self-Healing
+				// 3. Свежий рестарт, Логи, Масштабирование и Self-Healing
 				if status.RestartCount > restartHistory[podKey] {
 					totalIncidents++
 					fmt.Fprintf(os.Stdout, "\n\033[33m🔥 СВЕЖИЙ ИНЦИДЕНТ #%d! [%s]\033[0m\n", totalIncidents, podKey)
@@ -166,15 +213,24 @@ func showStatus(c *kubernetes.Clientset) {
 					}
 					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
 
-					// Self-Healing
+					// --- НОВОЕ: Масштабирование (если рестартов 4 и более) ---
+					if status.RestartCount > 3 && pod.Namespace == "default" {
+						fmt.Fprintf(os.Stdout, "🔍 Анализирую необходимость масштабирования для %s...\n", pod.Name)
+						scaleUpDeployment(c, pod.Namespace, pod.Name)
+					}
+
+					// --- SELF-HEALING (если рестартов более 10) ---
 					if status.RestartCount > 10 && pod.Namespace != "kube-system" {
 						fmt.Fprintf(os.Stdout, "🧹 \033[35mSELF-HEALING: Удаляю %s...\033[0m\n", podKey)
 						c.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 						delete(restartHistory, podKey)
-						continue
+						continue // Переходим к следующему поду
 					}
+
+					// ВАЖНО: Обновляем историю в самом конце этого блока
 					restartHistory[podKey] = status.RestartCount
 				}
+
 			}
 		}
 

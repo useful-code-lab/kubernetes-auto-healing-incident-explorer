@@ -9,11 +9,15 @@ kind: ClusterRole
 metadata:
   name: staging-demo-role
 rules:
-- apiGroups: [""]
-  # Добавляем ресурсы, к которым обращаемся через staging/client-go
-  resources: ["pods",  "pods/log", "events", "nodes", "namespaces", "deployments"]
-  # Разрешаем смотреть (watch) и перечислять (list)
-  verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  # 1. Группа "" (Core): здесь живут Поды и События
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch", "delete"]
+
+  # 2. Группа "apps": здесь живут Deployments и ReplicaSets
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -25,5 +29,5 @@ subjects:
     namespace: default
 roleRef:
   kind: ClusterRole
-  name: staging-demo-role # Используем нашу новую роль вместо стандартной view
+  name: staging-demo-role
   apiGroup: rbac.authorization.k8s.io
