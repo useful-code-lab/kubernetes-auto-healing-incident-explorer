@@ -51,4 +51,18 @@ kubectl logs kube-source-explorer
 Автоматизация: Makefile позволяет одной командой make redo обновить код в кластере.
 
 
+Как поменять аргумент для выбора функционала
+Поменять тут `manifests/pod.yaml`
+```yaml
+      command: ["/app"]      # явно указываем путь к бинарнику
+```
+Запустить 
+```bash
+kubectl delete -f manifests/pod.yaml
+kubectl apply -f manifests/pod.yaml
+
+или
+kubectl replace --force -f manifests/pod.yaml
+```
+
 
