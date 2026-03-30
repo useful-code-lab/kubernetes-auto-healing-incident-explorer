@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -67,36 +68,41 @@ func monitorEvents(c *kubernetes.Clientset) {
 	}
 }
 
+// analyzeLogText ищет ключевые слова в тексте лога
+func analyzeLogText(logs string) string {
+	lowerLogs := strings.ToLower(logs)
+	criticalWords := []string{"error", "panic", "fatal", "fail", "exception"}
+
+	for _, word := range criticalWords {
+		if strings.Contains(lowerLogs, word) {
+			return "🔥 ОБНАРУЖЕНА КРИТИЧЕСКАЯ ОШИБКА В ТЕКСТЕ ЛОГОВ!"
+		}
+	}
+	return ""
+}
+
 func showStatus(c *kubernetes.Clientset) {
-	fmt.Fprintln(os.Stderr, ">>> Запуск расширенного Health-чекера...")
 	for {
 		pods, err := c.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Ошибка списка подов: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
 		} else {
-			fmt.Fprintf(os.Stdout, "\n--- ОТЧЕТ ПО КЛАСТЕРУ [%s] ---\n", time.Now().Format("15:04:05"))
-			fmt.Fprintf(os.Stdout, "Всего подов: %d\n", len(pods.Items))
+			fmt.Fprintf(os.Stdout, "\n--- МОНИТОРИНГ [%s] ---\n", time.Now().Format("15:04:05"))
 
 			for _, pod := range pods.Items {
 				for _, status := range pod.Status.ContainerStatuses {
-					// 1. Проверка на рестарты + вывод логов
 					if status.RestartCount > 0 {
-						fmt.Fprintf(os.Stdout, "⚠️  Warning: [%s/%s] рестартов: %d\n",
-							pod.Namespace, pod.Name, status.RestartCount)
-						
-						// Берем логи только если под "падал"
-						logs := getPodLogs(c, pod.Namespace, pod.Name)
-						fmt.Fprintf(os.Stdout, "--- ПОСЛЕДНИЕ ЛОГИ %s ---\n%s\n-------------------\n", 
-							pod.Name, logs)
-					}
+						fmt.Fprintf(os.Stdout, "⚠️  [%s/%s] рестартов: %d\n", pod.Namespace, pod.Name, status.RestartCount)
 
-					// 2. Проверка зависших состояний (Waiting)
-					if status.State.Waiting != nil {
-						reason := status.State.Waiting.Reason
-						if reason == "CrashLoopBackOff" || reason == "ImagePullBackOff" || reason == "ErrImagePull" {
-							fmt.Fprintf(os.Stdout, "🚨 CRITICAL: [%s/%s] Ошибка: %s\n",
-								pod.Namespace, pod.Name, reason)
+						logs := getPodLogs(c, pod.Namespace, pod.Name)
+
+						// ПУНКТ 3: Анализируем текст логов
+						alert := analyzeLogText(logs)
+						if alert != "" {
+							fmt.Fprintln(os.Stdout, alert)
 						}
+
+						fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
 					}
 				}
 			}
@@ -112,7 +118,7 @@ func getPodLogs(c *kubernetes.Clientset, namespace, name string) string {
 		TailLines: &limit,
 		// Можно добавить Previous: true, чтобы видеть логи именно ПЕРЕД падением
 	}
-	
+
 	req := c.CoreV1().Pods(namespace).GetLogs(name, opts)
 	podLogs, err := req.DoRaw(context.TODO())
 	if err != nil {
