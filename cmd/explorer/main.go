@@ -86,44 +86,53 @@ func analyzeLogText(logs string) string {
 }
 
 func showStatus(c *kubernetes.Clientset) {
-	fmt.Fprintln(os.Stderr, ">>> Запуск мониторинга с памятью рестартов...")
+	fmt.Fprintln(os.Stderr, ">>> Мониторинг запущен. Ожидаю новых событий...")
+	isFirstRun := true 
+
 	for {
 		pods, err := c.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
+			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		for _, pod := range pods.Items {
 			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-			
 			for _, status := range pod.Status.ContainerStatuses {
-				currentRestarts := status.RestartCount
 				
-				// ПРОВЕРКА: Если рестартов > 0 И их стало больше, чем мы видели раньше
-				if currentRestarts > 0 && currentRestarts > restartHistory[podKey] {
-					
-					fmt.Fprintf(os.Stdout, "\nНовый инцидент! ⚠️  [%s] рестартов: %d (было %d)\n", 
-						podKey, currentRestarts, restartHistory[podKey])
+				// 1. Инициализация (Холодный старт)
+				if isFirstRun {
+					restartHistory[podKey] = status.RestartCount
+					continue
+				}
+
+				// 2. Детекция НОВОГО рестарта
+				if status.RestartCount > restartHistory[podKey] {
+					fmt.Fprintf(os.Stdout, "\n🔥 СВЕЖИЙ ИНЦИДЕНТ! [%s]\n", podKey)
 					
 					logs := getPodLogs(c, pod.Namespace, pod.Name)
+					
+					// 3. ИСПОЛЬЗУЕМ analyzeLogText (тот самый пункт 3)
 					alert := analyzeLogText(logs)
 					if alert != "" {
-						fmt.Fprintln(os.Stdout, alert)
+						fmt.Fprintln(os.Stdout, alert) // Печатаем красную метку, если нашли "error"
 					}
+
 					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
-					
-					// ЗАПОМИНАЕМ новое значение
-					restartHistory[podKey] = currentRestarts
+					restartHistory[podKey] = status.RestartCount
 				}
 			}
 		}
-		
-		// Чтобы мы понимали, что программа жива, оставим тихий пульс раз в минуту
-		// или просто уберем лишний спам "ОТЧЕТ ПО КЛАСТЕРУ", если ничего не меняется.
+
+		if isFirstRun {
+			fmt.Fprintln(os.Stderr, ">>> Базовое состояние сохранено. Тишина...")
+			isFirstRun = false
+		}
 		time.Sleep(5 * time.Second)
 	}
 }
+
 
 
 // Вспомогательная функция для логов
