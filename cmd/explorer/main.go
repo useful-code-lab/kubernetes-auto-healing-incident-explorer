@@ -13,6 +13,10 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+// Храним количество рестартов: "namespace/name" -> count
+var restartHistory = make(map[string]int32)
+
+
 func main() {
 	// Используем Fprintln в Stderr для мгновенного вывода в kubectl logs
 	fmt.Fprintln(os.Stderr, "--- ПРИЛОЖЕНИЕ СТАРТУЕТ ---")
@@ -82,34 +86,45 @@ func analyzeLogText(logs string) string {
 }
 
 func showStatus(c *kubernetes.Clientset) {
+	fmt.Fprintln(os.Stderr, ">>> Запуск мониторинга с памятью рестартов...")
 	for {
 		pods, err := c.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
-		} else {
-			fmt.Fprintf(os.Stdout, "\n--- МОНИТОРИНГ [%s] ---\n", time.Now().Format("15:04:05"))
+			continue
+		}
 
-			for _, pod := range pods.Items {
-				for _, status := range pod.Status.ContainerStatuses {
-					if status.RestartCount > 0 {
-						fmt.Fprintf(os.Stdout, "⚠️  [%s/%s] рестартов: %d\n", pod.Namespace, pod.Name, status.RestartCount)
-
-						logs := getPodLogs(c, pod.Namespace, pod.Name)
-
-						// ПУНКТ 3: Анализируем текст логов
-						alert := analyzeLogText(logs)
-						if alert != "" {
-							fmt.Fprintln(os.Stdout, alert)
-						}
-
-						fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
+		for _, pod := range pods.Items {
+			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			
+			for _, status := range pod.Status.ContainerStatuses {
+				currentRestarts := status.RestartCount
+				
+				// ПРОВЕРКА: Если рестартов > 0 И их стало больше, чем мы видели раньше
+				if currentRestarts > 0 && currentRestarts > restartHistory[podKey] {
+					
+					fmt.Fprintf(os.Stdout, "\nНовый инцидент! ⚠️  [%s] рестартов: %d (было %d)\n", 
+						podKey, currentRestarts, restartHistory[podKey])
+					
+					logs := getPodLogs(c, pod.Namespace, pod.Name)
+					alert := analyzeLogText(logs)
+					if alert != "" {
+						fmt.Fprintln(os.Stdout, alert)
 					}
+					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
+					
+					// ЗАПОМИНАЕМ новое значение
+					restartHistory[podKey] = currentRestarts
 				}
 			}
 		}
-		time.Sleep(10 * time.Second)
+		
+		// Чтобы мы понимали, что программа жива, оставим тихий пульс раз в минуту
+		// или просто уберем лишний спам "ОТЧЕТ ПО КЛАСТЕРУ", если ничего не меняется.
+		time.Sleep(5 * time.Second)
 	}
 }
+
 
 // Вспомогательная функция для логов
 func getPodLogs(c *kubernetes.Clientset, namespace, name string) string {
