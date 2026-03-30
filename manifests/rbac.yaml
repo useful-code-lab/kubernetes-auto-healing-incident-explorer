@@ -11,7 +11,7 @@ metadata:
 rules:
 - apiGroups: [""]
   # Добавляем ресурсы, к которым обращаемся через staging/client-go
-  resources: ["pods", "events", "nodes", "namespaces"]
+  resources: ["pods",  "pods/log", "events", "nodes", "namespaces"]
   # Разрешаем смотреть (watch) и перечислять (list)
   verbs: ["get", "list", "watch"]
 ---

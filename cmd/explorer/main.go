@@ -68,7 +68,7 @@ func monitorEvents(c *kubernetes.Clientset) {
 }
 
 func showStatus(c *kubernetes.Clientset) {
-	fmt.Fprintln(os.Stderr, ">>> Запуск Health-чекера (Health Checker)...")
+	fmt.Fprintln(os.Stderr, ">>> Запуск расширенного Health-чекера...")
 	for {
 		pods, err := c.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
@@ -79,18 +79,23 @@ func showStatus(c *kubernetes.Clientset) {
 
 			for _, pod := range pods.Items {
 				for _, status := range pod.Status.ContainerStatuses {
-					// 1. Проверка на частые рестарты
+					// 1. Проверка на рестарты + вывод логов
 					if status.RestartCount > 0 {
 						fmt.Fprintf(os.Stdout, "⚠️  Warning: [%s/%s] рестартов: %d\n",
 							pod.Namespace, pod.Name, status.RestartCount)
+						
+						// Берем логи только если под "падал"
+						logs := getPodLogs(c, pod.Namespace, pod.Name)
+						fmt.Fprintf(os.Stdout, "--- ПОСЛЕДНИЕ ЛОГИ %s ---\n%s\n-------------------\n", 
+							pod.Name, logs)
 					}
 
 					// 2. Проверка зависших состояний (Waiting)
 					if status.State.Waiting != nil {
 						reason := status.State.Waiting.Reason
 						if reason == "CrashLoopBackOff" || reason == "ImagePullBackOff" || reason == "ErrImagePull" {
-							fmt.Fprintf(os.Stdout, "🚨 CRITICAL: [%s/%s] Ошибка: %s (Сообщение: %s)\n",
-								pod.Namespace, pod.Name, reason, status.State.Waiting.Message)
+							fmt.Fprintf(os.Stdout, "🚨 CRITICAL: [%s/%s] Ошибка: %s\n",
+								pod.Namespace, pod.Name, reason)
 						}
 					}
 				}
@@ -98,4 +103,20 @@ func showStatus(c *kubernetes.Clientset) {
 		}
 		time.Sleep(10 * time.Second)
 	}
+}
+
+// Вспомогательная функция для логов
+func getPodLogs(c *kubernetes.Clientset, namespace, name string) string {
+	limit := int64(5) // последние 5 строк
+	opts := &corev1.PodLogOptions{
+		TailLines: &limit,
+		// Можно добавить Previous: true, чтобы видеть логи именно ПЕРЕД падением
+	}
+	
+	req := c.CoreV1().Pods(namespace).GetLogs(name, opts)
+	podLogs, err := req.DoRaw(context.TODO())
+	if err != nil {
+		return "Логи пока недоступны (под в процессе запуска/ошибки)"
+	}
+	return string(podLogs)
 }
