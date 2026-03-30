@@ -16,7 +16,6 @@ import (
 // Храним количество рестартов: "namespace/name" -> count
 var restartHistory = make(map[string]int32)
 
-
 func main() {
 	// Используем Fprintln в Stderr для мгновенного вывода в kubectl logs
 	fmt.Fprintln(os.Stderr, "--- ПРИЛОЖЕНИЕ СТАРТУЕТ ---")
@@ -87,7 +86,7 @@ func analyzeLogText(logs string) string {
 
 func showStatus(c *kubernetes.Clientset) {
 	fmt.Fprintln(os.Stderr, ">>> Мониторинг запущен. Ожидаю новых событий...")
-	isFirstRun := true 
+	isFirstRun := true
 
 	for {
 		pods, err := c.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
@@ -99,41 +98,56 @@ func showStatus(c *kubernetes.Clientset) {
 
 		for _, pod := range pods.Items {
 			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+
 			for _, status := range pod.Status.ContainerStatuses {
-				
+
 				// 1. Инициализация (Холодный старт)
 				if isFirstRun {
+					// Если на старте уже есть рестарты, можно кратко об этом упомянуть
+					if status.RestartCount > 0 {
+						fmt.Fprintf(os.Stdout, "ℹ️  На старте: [%s] уже имеет %d рестартов\n", podKey, status.RestartCount)
+					}
 					restartHistory[podKey] = status.RestartCount
 					continue
 				}
 
-				// 2. Детекция НОВОГО рестарта
+				// 2. Детекция ЗАВИСШИХ статусов (ImagePullBackOff и др.)
+				// Рестартов может быть 0, но под "сломан"
+				if status.State.Waiting != nil {
+					reason := status.State.Waiting.Reason
+					if reason == "ImagePullBackOff" || reason == "ErrImagePull" || reason == "CreateContainerConfigError" {
+						fmt.Fprintf(os.Stdout, "\n🚨 КРИТИЧЕСКИЙ СТАТУС: [%s] -> %s (Проверьте манифест/образ)\n", podKey, reason)
+					}
+				}
+
+				// 3. Детекция НОВОГО рестарта (CrashLoopBackOff и ошибки в коде)
 				if status.RestartCount > restartHistory[podKey] {
 					fmt.Fprintf(os.Stdout, "\n🔥 СВЕЖИЙ ИНЦИДЕНТ! [%s]\n", podKey)
-					
+					fmt.Fprintf(os.Stdout, "Рестартов: %d -> %d\n", restartHistory[podKey], status.RestartCount)
+
 					logs := getPodLogs(c, pod.Namespace, pod.Name)
-					
-					// 3. ИСПОЛЬЗУЕМ analyzeLogText (тот самый пункт 3)
+
+					// Анализируем текст логов на наличие ERROR/Panic
 					alert := analyzeLogText(logs)
 					if alert != "" {
-						fmt.Fprintln(os.Stdout, alert) // Печатаем красную метку, если нашли "error"
+						fmt.Fprintln(os.Stdout, alert)
 					}
 
 					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
+
+					// Обновляем историю, чтобы не спамить этим же числом
 					restartHistory[podKey] = status.RestartCount
 				}
 			}
 		}
 
 		if isFirstRun {
-			fmt.Fprintln(os.Stderr, ">>> Базовое состояние сохранено. Тишина...")
+			fmt.Fprintln(os.Stderr, ">>> Базовое состояние сохранено. Вхожу в режим слежения...")
 			isFirstRun = false
 		}
 		time.Sleep(5 * time.Second)
 	}
 }
-
-
 
 // Вспомогательная функция для логов
 func getPodLogs(c *kubernetes.Clientset, namespace, name string) string {

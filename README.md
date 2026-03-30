@@ -65,4 +65,10 @@ kubectl apply -f manifests/pod.yaml
 kubectl replace --force -f manifests/pod.yaml
 ```
 
+## Тестирование
+Абсолютно плохой под. Через некоторое время kubernetes попробует поднять его ещё
+```bash
+kubectl run immediate-fail --image=busybox -- /bin/sh -c "echo 'ERROR: Hard crash'; exit 1"
+```
+
 
