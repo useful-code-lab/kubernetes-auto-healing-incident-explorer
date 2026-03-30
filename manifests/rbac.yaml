@@ -13,7 +13,7 @@ rules:
   # Добавляем ресурсы, к которым обращаемся через staging/client-go
   resources: ["pods",  "pods/log", "events", "nodes", "namespaces"]
   # Разрешаем смотреть (watch) и перечислять (list)
-  verbs: ["get", "list", "watch"]
+  verbs: ["get", "list", "watch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

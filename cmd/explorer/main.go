@@ -83,7 +83,6 @@ func analyzeLogText(logs string) string {
 	}
 	return ""
 }
-
 func showStatus(c *kubernetes.Clientset) {
 	fmt.Fprintln(os.Stderr, ">>> Мониторинг запущен. Ожидаю новых событий...")
 	isFirstRun := true
@@ -103,7 +102,6 @@ func showStatus(c *kubernetes.Clientset) {
 
 				// 1. Инициализация (Холодный старт)
 				if isFirstRun {
-					// Если на старте уже есть рестарты, можно кратко об этом упомянуть
 					if status.RestartCount > 0 {
 						fmt.Fprintf(os.Stdout, "ℹ️  На старте: [%s] уже имеет %d рестартов\n", podKey, status.RestartCount)
 					}
@@ -111,31 +109,41 @@ func showStatus(c *kubernetes.Clientset) {
 					continue
 				}
 
-				// 2. Детекция ЗАВИСШИХ статусов (ImagePullBackOff и др.)
-				// Рестартов может быть 0, но под "сломан"
+				// 2. Детекция ЗАВИСШИХ статусов (ImagePull/ConfigError)
 				if status.State.Waiting != nil {
 					reason := status.State.Waiting.Reason
 					if reason == "ImagePullBackOff" || reason == "ErrImagePull" || reason == "CreateContainerConfigError" {
-						fmt.Fprintf(os.Stdout, "\n🚨 КРИТИЧЕСКИЙ СТАТУС: [%s] -> %s (Проверьте манифест/образ)\n", podKey, reason)
+						fmt.Fprintf(os.Stdout, "\n🚨 КРИТИЧЕСКИЙ СТАТУС: [%s] -> %s\n", podKey, reason)
 					}
 				}
 
-				// 3. Детекция НОВОГО рестарта (CrashLoopBackOff и ошибки в коде)
+				// 3. Детекция НОВОГО рестарта и SELF-HEALING
 				if status.RestartCount > restartHistory[podKey] {
 					fmt.Fprintf(os.Stdout, "\n🔥 СВЕЖИЙ ИНЦИДЕНТ! [%s]\n", podKey)
 					fmt.Fprintf(os.Stdout, "Рестартов: %d -> %d\n", restartHistory[podKey], status.RestartCount)
 
 					logs := getPodLogs(c, pod.Namespace, pod.Name)
-
-					// Анализируем текст логов на наличие ERROR/Panic
-					alert := analyzeLogText(logs)
-					if alert != "" {
+					if alert := analyzeLogText(logs); alert != "" {
 						fmt.Fprintln(os.Stdout, alert)
 					}
-
 					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
 
-					// Обновляем историю, чтобы не спамить этим же числом
+					// --- ПУНКТ 4: SELF-HEALING (Удаление после 10 падений) ---
+					// Защищаем системные неймспейсы от случайного удаления
+					if status.RestartCount > 10 && pod.Namespace != "kube-system" {
+						fmt.Fprintf(os.Stdout, "🧹 SELF-HEALING: Под %s падает слишком часто. Удаляю...\n", podKey)
+						
+						err := c.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "❌ Ошибка удаления: %v\n", err)
+						} else {
+							fmt.Fprintln(os.Stdout, "✅ Под удален для пересоздания.")
+							// Сбрасываем историю, так как имя нового пода может измениться
+							delete(restartHistory, podKey)
+							continue 
+						}
+					}
+
 					restartHistory[podKey] = status.RestartCount
 				}
 			}
