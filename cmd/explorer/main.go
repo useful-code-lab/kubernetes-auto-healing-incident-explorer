@@ -92,7 +92,7 @@ func analyzeLogText(logs string) string {
 func showStatus(c *kubernetes.Clientset) {
 	fmt.Fprintln(os.Stderr, ">>> Мониторинг запущен. Ожидаю новых событий...")
 	isFirstRun := true
-	loopCounter := 0 // Для периодических отчетов
+	loopCounter := 0
 
 	for {
 		loopCounter++
@@ -117,46 +117,38 @@ func showStatus(c *kubernetes.Clientset) {
 					continue
 				}
 
-				// 2. Зависшие статусы
-				// 2. Детекция ЗАВИСШИХ статусов
-				if status.State.Waiting != nil && !isFirstRun {
+				// 2. Улучшенная детекция ЗАВИСШИХ статусов (с памятью)
+				if status.State.Waiting != nil {
 					reason := status.State.Waiting.Reason
 					if reason == "ImagePullBackOff" || reason == "ErrImagePull" || reason == "CreateContainerConfigError" {
-						// ПРОВЕРКА: Если мы об этом еще не писали ИЛИ статус изменился
+						// Печатаем только если статус изменился или мы о нем еще не знали
 						if statusHistory[podKey] != reason {
-							fmt.Fprintf(os.Stdout, "\n🚨 НОВЫЙ КРИТИЧЕСКИЙ СТАТУС: [%s] -> %s\n", podKey, reason)
-							statusHistory[podKey] = reason // Запоминаем, что уже ругались
+							fmt.Fprintf(os.Stdout, "\n\033[31m🚨 НОВЫЙ КРИТИЧЕСКИЙ СТАТУС: [%s] -> %s\033[0m\n", podKey, reason)
+							statusHistory[podKey] = reason
 						}
 					}
 				} else {
-					// Если под вышел из состояния Waiting (стал Running), очищаем историю статуса
+					// Если под вышел из режима ожидания (заработал), удаляем из памяти
 					delete(statusHistory, podKey)
 				}
 
-				// 3. Свежий рестарт
+				// 3. Свежий рестарт и Self-Healing
 				if status.RestartCount > restartHistory[podKey] {
-					totalIncidents++ // Считаем инцидент
-
-					fmt.Fprintf(os.Stdout, "\n🔥 СВЕЖИЙ ИНЦИДЕНТ #%d! [%s]\n", totalIncidents, podKey)
-					fmt.Fprintf(os.Stdout, "Рестартов: %d -> %d\n", restartHistory[podKey], status.RestartCount)
+					totalIncidents++
+					fmt.Fprintf(os.Stdout, "\n\033[33m🔥 СВЕЖИЙ ИНЦИДЕНТ #%d! [%s]\033[0m\n", totalIncidents, podKey)
 
 					logs := getPodLogs(c, pod.Namespace, pod.Name)
 					if alert := analyzeLogText(logs); alert != "" {
-						fmt.Fprintln(os.Stdout, alert)
+						fmt.Fprintf(os.Stdout, "\033[31m%s\033[0m\n", alert)
 					}
 					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
 
-					// 4. Self-Healing
+					// Self-Healing
 					if status.RestartCount > 10 && pod.Namespace != "kube-system" {
-						fmt.Fprintf(os.Stdout, "🧹 SELF-HEALING: Под %s падает слишком часто. Удаляю...\n", podKey)
-						err := c.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "❌ Ошибка удаления: %v\n", err)
-						} else {
-							fmt.Fprintln(os.Stdout, "✅ Под удален для пересоздания.")
-							delete(restartHistory, podKey)
-							continue
-						}
+						fmt.Fprintf(os.Stdout, "🧹 \033[35mSELF-HEALING: Удаляю %s...\033[0m\n", podKey)
+						c.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
+						delete(restartHistory, podKey)
+						continue
 					}
 					restartHistory[podKey] = status.RestartCount
 				}
@@ -168,13 +160,11 @@ func showStatus(c *kubernetes.Clientset) {
 			isFirstRun = false
 		}
 
-		// 5. ПЕРИОДИЧЕСКАЯ СВОДКА (раз в 12 циклов ~ 1 минута)
 		if loopCounter%12 == 0 {
 			uptime := time.Since(startTime).Round(time.Second)
-			fmt.Fprintf(os.Stdout, "\n📊 СТАТИСТИКА: Аптайм: %v | Всего инцидентов: %d | Активных подов: %d\n",
+			fmt.Fprintf(os.Stdout, "\n\033[32m📊 СТАТИСТИКА: Аптайм: %v | Инцидентов: %d | Подов: %d\033[0m\n",
 				uptime, totalIncidents, len(pods.Items))
 		}
-
 		time.Sleep(5 * time.Second)
 	}
 }
