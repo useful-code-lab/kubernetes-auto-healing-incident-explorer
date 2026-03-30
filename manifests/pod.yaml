@@ -8,5 +8,7 @@ spec:
     - name: explorer
       image: kube-source-explorer:latest
       imagePullPolicy: Never # Чтобы использовать локальный образ
+      ports:
+        - containerPort: 8080 # ОТКРЫВАЕМ ПОРТ
       command: ["/app"]      # явно указываем путь к бинарнику
       args: ["status"]        # аргументы к /app

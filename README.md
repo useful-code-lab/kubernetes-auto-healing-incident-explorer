@@ -71,4 +71,19 @@ kubectl replace --force -f manifests/pod.yaml
 kubectl run immediate-fail --image=busybox -- /bin/sh -c "echo 'ERROR: Hard crash'; exit 1"
 ```
 
+## Проверка передачи в Grafana
+Сборка и запуск: 
+```bash
+make redo
+```
+Проброс порта
+```bash
+kubectl port-forward kube-source-explorer 8080:8080
+```
+Проверка в браузере
+```bash
+Открой http://localhost:8080/metrics
+```
+
+
 
