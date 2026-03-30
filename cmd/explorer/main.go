@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -21,9 +22,31 @@ var (
 	statusHistory  = make(map[string]string) // "namespace/name" -> "LastReason"
 )
 
+func startMetricsServer() {
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		// Формат Prometheus: имя_метрики{ярлыки} значение
+		fmt.Fprintf(w, "# HELP explorer_incidents_total Total number of detected incidents\n")
+		fmt.Fprintf(w, "# TYPE explorer_incidents_total counter\n")
+		fmt.Fprintf(w, "explorer_incidents_total %d\n", totalIncidents)
+
+		uptime := time.Since(startTime).Seconds()
+		fmt.Fprintf(w, "# HELP explorer_uptime_seconds Uptime of the explorer in seconds\n")
+		fmt.Fprintf(w, "# TYPE explorer_uptime_seconds gauge\n")
+		fmt.Fprintf(w, "explorer_uptime_seconds %.0f\n", uptime)
+	})
+
+	fmt.Fprintln(os.Stderr, "🌐 Метрики доступны на :8080/metrics")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка сервера метрик: %v\n", err)
+	}
+}
+
 func main() {
 	// Используем Fprintln в Stderr для мгновенного вывода в kubectl logs
 	fmt.Fprintln(os.Stderr, "--- ПРИЛОЖЕНИЕ СТАРТУЕТ ---")
+
+	// ЗАПУСК СЕРВЕРА МЕТРИК
+	go startMetricsServer()
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
