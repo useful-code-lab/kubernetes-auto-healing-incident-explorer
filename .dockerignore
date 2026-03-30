@@ -14,3 +14,8 @@ bin/
 *.log
 .idea/
 .vscode/
+
+kubernetes/pkg
+kubernetes/test
+kubernetes/docs
+
