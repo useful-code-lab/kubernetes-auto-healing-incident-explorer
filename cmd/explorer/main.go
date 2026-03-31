@@ -17,10 +17,15 @@ import (
 var (
 	// Храним количество рестартов: "namespace/name" -> count
 	restartHistory = make(map[string]int32)
-	totalIncidents int                       // Всего пойманных ошибок с момента старта
-	startTime      = time.Now()              // Время запуска для расчета аптайма
-	statusHistory  = make(map[string]string) // "namespace/name" -> "LastReason"
+	totalIncidents int                           // Всего пойманных ошибок с момента старта
+	startTime          = time.Now()              // Время запуска для расчета аптайма
+	statusHistory      = make(map[string]string) // "namespace/name" -> "LastReason"
+	lastScaleTime      = make(map[string]time.Time)
+
+	maxReplicas   int32 = 10
+	scaleCooldown       = 30 * time.Second
 )
+
 
 func startMetricsServer() {
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -78,44 +83,71 @@ func scaleUpDeployment(c *kubernetes.Clientset, namespace, podName string) {
 
 	pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ DEBUG: Не нашел под: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ Не нашел под: %v\n", err)
 		return
 	}
 
 	for _, owner := range pod.OwnerReferences {
-		fmt.Fprintf(os.Stdout, "🔗 DEBUG: Найден владелец типа [%s] с именем [%s]\n", owner.Kind, owner.Name)
+		if owner.Kind != "ReplicaSet" {
+			continue
+		}
 
-		if owner.Kind == "ReplicaSet" {
-			rs, err := c.AppsV1().ReplicaSets(namespace).Get(context.TODO(), owner.Name, metav1.GetOptions{})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "❌ DEBUG: Не нашел ReplicaSet: %v\n", err)
+		rs, err := c.AppsV1().ReplicaSets(namespace).Get(context.TODO(), owner.Name, metav1.GetOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Не нашел ReplicaSet: %v\n", err)
+			continue
+		}
+
+		for _, rsOwner := range rs.OwnerReferences {
+			if rsOwner.Kind != "Deployment" {
 				continue
 			}
 
-			for _, rsOwner := range rs.OwnerReferences {
-				fmt.Fprintf(os.Stdout, "🔗 DEBUG: У ReplicaSet найден владелец [%s] -> [%s]\n", rsOwner.Kind, rsOwner.Name)
+			deploy, err := c.AppsV1().Deployments(namespace).Get(context.TODO(), rsOwner.Name, metav1.GetOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Ошибка доступа к Deployment: %v\n", err)
+				continue
+			}
 
-				if rsOwner.Kind == "Deployment" {
-					deploy, err := c.AppsV1().Deployments(namespace).Get(context.TODO(), rsOwner.Name, metav1.GetOptions{})
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "❌ DEBUG: Ошибка доступа к Deployment: %v\n", err)
-						continue
-					}
+			name := deploy.Name
+			current := *deploy.Spec.Replicas
+			ready := deploy.Status.ReadyReplicas
 
-					// Печатаем текущее состояние перед попыткой изменения
-					fmt.Fprintf(os.Stdout, "📈 DEBUG: Текущие реплики Deployment [%s]: %d\n", deploy.Name, *deploy.Spec.Replicas)
+			fmt.Fprintf(os.Stdout, "📊 Deployment [%s]: %d/%d ready\n", name, ready, current)
 
-					newReplicas := *deploy.Spec.Replicas + 1
-					deploy.Spec.Replicas = &newReplicas
+			// 🚫 1. Проверка лимита
+			if current >= maxReplicas {
+				fmt.Fprintf(os.Stdout, "⛔ Достигнут лимит реплик (%d)\n", maxReplicas)
+				return
+			}
 
-					_, err = c.AppsV1().Deployments(namespace).Update(context.TODO(), deploy, metav1.UpdateOptions{})
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "❌ DEBUG: Ошибка UPDATE: %v\n", err)
-					} else {
-						fmt.Fprintf(os.Stdout, "🚀 УСПЕХ: Реплики %s увеличены до %d\n", deploy.Name, newReplicas)
-					}
+			// 🚫 2. Cooldown (анти-спам scaling)
+			if last, ok := lastScaleTime[name]; ok {
+				if time.Since(last) < scaleCooldown {
+					fmt.Fprintf(os.Stdout, "⏳ Пропуск scaling — cooldown активен\n")
+					return
 				}
 			}
+
+			// 🚫 3. Проверка стабильности
+			if ready < current {
+				fmt.Fprintf(os.Stdout, "⚠️ Пропуск scaling — поды не готовы (%d/%d)\n", ready, current)
+				return
+			}
+
+			// ✅ 4. Масштабирование
+			newReplicas := current + 1
+			deploy.Spec.Replicas = &newReplicas
+
+			_, err = c.AppsV1().Deployments(namespace).Update(context.TODO(), deploy, metav1.UpdateOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Ошибка UPDATE: %v\n", err)
+				return
+			}
+
+			lastScaleTime[name] = time.Now()
+
+			fmt.Fprintf(os.Stdout, "🚀 Scaling: %s увеличен до %d реплик\n", name, newReplicas)
 		}
 	}
 }
@@ -148,15 +180,117 @@ func monitorEvents(c *kubernetes.Clientset) {
 
 // analyzeLogText ищет ключевые слова в тексте лога
 func analyzeLogText(logs string) string {
-	lowerLogs := strings.ToLower(logs)
-	criticalWords := []string{"error", "panic", "fatal", "fail", "exception"}
+	lower := strings.ToLower(logs)
 
-	for _, word := range criticalWords {
-		if strings.Contains(lowerLogs, word) {
-			return "🔥 ОБНАРУЖЕНА КРИТИЧЕСКАЯ ОШИБКА В ТЕКСТЕ ЛОГОВ!"
+	switch {
+	case strings.Contains(lower, "out of memory"):
+		return "💥 OOMKilled — не хватает памяти"
+	case strings.Contains(lower, "connection refused"):
+		return "🌐 Проблема с сетью/сервисом"
+	case strings.Contains(lower, "panic"):
+		return "🔥 PANIC в приложении"
+	case strings.Contains(lower, "permission denied"):
+		return "🔐 Проблема с правами доступа"
+	}
+
+	return ""
+}
+
+func printIndented(text string) {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			fmt.Printf("  %s\n", line)
 		}
 	}
-	return ""
+}
+
+func printIncidentBlock(
+	pod corev1.Pod,
+	status corev1.ContainerStatus,
+	prevRestarts int32,
+	logs string,
+	events string,
+	analysis string,
+) {
+	fmt.Println("\n═══════════════════════════════════════════════")
+
+	fmt.Printf("🔥 INCIDENT\n")
+	fmt.Printf("Pod:        %s/%s\n", pod.Namespace, pod.Name)
+	fmt.Printf("Container:  %s\n", status.Name)
+	fmt.Printf("Time:       %s\n", time.Now().Format("15:04:05"))
+
+	fmt.Println("═══════════════════════════════════════════════")
+
+	// STATUS
+	fmt.Println("\n📊 STATUS")
+	fmt.Printf("  Restarts:        %d → %d\n", prevRestarts, status.RestartCount)
+	fmt.Printf("  Phase:           %s\n", pod.Status.Phase)
+	fmt.Printf("  Node:            %s\n", pod.Spec.NodeName)
+
+	// LAST TERMINATION
+	if status.LastTerminationState.Terminated != nil {
+		t := status.LastTerminationState.Terminated
+		fmt.Println("\n💀 LAST TERMINATION")
+		fmt.Printf("  Reason:          %s\n", t.Reason)
+		fmt.Printf("  Exit Code:       %d\n", t.ExitCode)
+		fmt.Printf("  Finished:        %s\n", t.FinishedAt.Format("15:04:05"))
+	}
+
+	// CURRENT STATE
+	if status.State.Waiting != nil {
+		fmt.Println("\n⚠️ CURRENT STATE")
+		fmt.Printf("  State:           Waiting\n")
+		fmt.Printf("  Reason:          %s\n", status.State.Waiting.Reason)
+	}
+
+	if status.State.Running != nil {
+		fmt.Println("\n⚠️ CURRENT STATE")
+		fmt.Printf("  State:           Running\n")
+		fmt.Printf("  Started:         %s\n", status.State.Running.StartedAt.Format("15:04:05"))
+	}
+
+	// ANALYSIS
+	if analysis != "" {
+		fmt.Println("\n🧠 ANALYSIS")
+		fmt.Printf("  %s\n", analysis)
+	}
+
+	// LOGS
+	fmt.Println("\n📄 LOGS (previous)")
+	printIndented(logs)
+
+	// EVENTS
+	fmt.Println("\n📡 EVENTS")
+	printIndented(events)
+
+	fmt.Println("\n═══════════════════════════════════════════════")
+}
+
+func getPodEvents(c *kubernetes.Clientset, namespace, podName string) string {
+	events, err := c.CoreV1().Events(namespace).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return "❌ Не удалось получить events"
+	}
+
+	var result strings.Builder
+
+	for _, e := range events.Items {
+		if e.InvolvedObject.Name == podName {
+			result.WriteString(fmt.Sprintf(
+				"[%s] %s: %s\n",
+				e.LastTimestamp.Format("15:04:05"),
+				e.Reason,
+				e.Message,
+			))
+		}
+	}
+
+	if result.Len() == 0 {
+		return "Нет событий"
+	}
+
+	return result.String()
 }
 
 func showStatus(c *kubernetes.Clientset) {
@@ -212,9 +346,29 @@ func showStatus(c *kubernetes.Clientset) {
 						fmt.Fprintf(os.Stdout, "\033[31m%s\033[0m\n", alert)
 					}
 					fmt.Fprintf(os.Stdout, "--- LOGS ---\n%s\n------------\n", logs)
+					prev := restartHistory[podKey]
 
+					events := getPodEvents(c, pod.Namespace, pod.Name)
+					analysis := analyzeLogText(logs)
+					printIncidentBlock(
+						pod,
+						status,
+						prev,
+						logs,
+						events,
+						analysis,
+					)
 					// --- НОВОЕ: Масштабирование (если рестартов 4 и более) ---
 					if status.RestartCount > 3 && pod.Namespace == "default" {
+						// ❌ Не масштабируем если это проблемы с образом
+						if status.State.Waiting != nil {
+							reason := status.State.Waiting.Reason
+							if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
+								fmt.Fprintf(os.Stdout, "🚫 Scaling отключён — проблема с образом\n")
+								continue
+							}
+						}
+
 						fmt.Fprintf(os.Stdout, "🔍 Анализирую необходимость масштабирования для %s...\n", pod.Name)
 						scaleUpDeployment(c, pod.Namespace, pod.Name)
 					}
@@ -250,16 +404,17 @@ func showStatus(c *kubernetes.Clientset) {
 
 // Вспомогательная функция для логов
 func getPodLogs(c *kubernetes.Clientset, namespace, name string) string {
-	limit := int64(5) // последние 5 строк
+	limit := int64(20)
+
 	opts := &corev1.PodLogOptions{
 		TailLines: &limit,
-		// Можно добавить Previous: true, чтобы видеть логи именно ПЕРЕД падением
+		Previous:  true, // 🔥 ВАЖНО — логи до падения
 	}
 
 	req := c.CoreV1().Pods(namespace).GetLogs(name, opts)
 	podLogs, err := req.DoRaw(context.TODO())
 	if err != nil {
-		return "Логи пока недоступны (под в процессе запуска/ошибки)"
+		return "❌ Previous логи недоступны"
 	}
 	return string(podLogs)
 }
