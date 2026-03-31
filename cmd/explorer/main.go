@@ -26,7 +26,6 @@ var (
 	scaleCooldown       = 30 * time.Second
 )
 
-
 func startMetricsServer() {
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		// Формат Prometheus: имя_метрики{ярлыки} значение
@@ -228,13 +227,24 @@ func printIncidentBlock(
 	fmt.Printf("  Phase:           %s\n", pod.Status.Phase)
 	fmt.Printf("  Node:            %s\n", pod.Spec.NodeName)
 
-	// LAST TERMINATION
+	// 🔥 LAST TERMINATION
 	if status.LastTerminationState.Terminated != nil {
-		t := status.LastTerminationState.Terminated
-		fmt.Println("\n💀 LAST TERMINATION")
-		fmt.Printf("  Reason:          %s\n", t.Reason)
-		fmt.Printf("  Exit Code:       %d\n", t.ExitCode)
-		fmt.Printf("  Finished:        %s\n", t.FinishedAt.Format("15:04:05"))
+		last := status.LastTerminationState.Terminated
+
+		fmt.Fprintf(os.Stdout, "\n💀 LAST TERMINATION\n")
+		fmt.Fprintf(os.Stdout, "  Reason:     %s\n", last.Reason)
+		fmt.Fprintf(os.Stdout, "  Exit Code:  %d\n", last.ExitCode)
+		fmt.Fprintf(os.Stdout, "  Finished:   %s\n", last.FinishedAt.Format("15:04:05"))
+
+		// 🔥 УМНЫЕ ПОДСКАЗКИ
+		switch last.ExitCode {
+		case 137:
+			fmt.Fprintf(os.Stdout, "  💥 OOMKilled (не хватает памяти)\n")
+		case 1:
+			fmt.Fprintf(os.Stdout, "  ❗ Общая ошибка приложения (exit 1)\n")
+		case 0:
+			fmt.Fprintf(os.Stdout, "  ⚠️ Контейнер завершился нормально, но был перезапущен\n")
+		}
 	}
 
 	// CURRENT STATE
@@ -254,6 +264,20 @@ func printIncidentBlock(
 	if analysis != "" {
 		fmt.Println("\n🧠 ANALYSIS")
 		fmt.Printf("  %s\n", analysis)
+	}
+
+	// fallback — текущее состояние
+	if status.State.Terminated != nil {
+		t := status.State.Terminated
+
+		fmt.Fprintf(os.Stdout, "\n💀 CURRENT TERMINATION\n")
+		fmt.Fprintf(os.Stdout, "  Reason:     %s\n", t.Reason)
+		fmt.Fprintf(os.Stdout, "  Exit Code:  %d\n", t.ExitCode)
+	}
+
+	if status.State.Waiting != nil {
+		fmt.Fprintf(os.Stdout, "\n⚠️ WAITING\n")
+		fmt.Fprintf(os.Stdout, "  Reason: %s\n", status.State.Waiting.Reason)
 	}
 
 	// LOGS
